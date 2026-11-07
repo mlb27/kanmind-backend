@@ -31,7 +31,7 @@ class BoardSerializer(serializers.ModelSerializer):
 
 
 class UserSummarySerializer(serializers.ModelSerializer):
-    """Return the public user fields used in board responses."""
+    """Return the public user fields used in API responses."""
 
     fullname = serializers.CharField(source="get_full_name", read_only=True)
 
@@ -70,3 +70,9 @@ class BoardUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Board
         fields = ["id", "title", "members", "owner_data", "members_data"]
+
+
+class EmailCheckSerializer(serializers.Serializer):
+    """Validate the email query parameter used to find a board member."""
+
+    email = serializers.EmailField(max_length=254)
