@@ -28,3 +28,45 @@ class BoardSerializer(serializers.ModelSerializer):
             "id", "title", "members", "member_count", "ticket_count",
             "tasks_to_do_count", "tasks_high_prio_count", "owner_id",
         ]
+
+
+class UserSummarySerializer(serializers.ModelSerializer):
+    """Return the public user fields used in board responses."""
+
+    fullname = serializers.CharField(source="get_full_name", read_only=True)
+
+    class Meta:
+        model = User
+        fields = ["id", "email", "fullname"]
+
+
+class BoardDetailSerializer(serializers.ModelSerializer):
+    """Return board details with members and an initially empty task list."""
+
+    owner_id = serializers.IntegerField(read_only=True)
+    members = UserSummarySerializer(many=True, read_only=True)
+    # Replace the empty list with task serialization when tasks are added.
+    tasks = serializers.ListField(read_only=True, default=list)
+
+    class Meta:
+        model = Board
+        fields = ["id", "title", "owner_id", "members", "tasks"]
+
+
+class BoardUpdateSerializer(serializers.ModelSerializer):
+    """Validate title and membership changes and return the updated users."""
+
+    members = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=User.objects.all(),
+        write_only=True,
+        required=False,
+    )
+    owner_data = UserSummarySerializer(source="owner", read_only=True)
+    members_data = UserSummarySerializer(
+        source="members", many=True, read_only=True,
+    )
+
+    class Meta:
+        model = Board
+        fields = ["id", "title", "members", "owner_data", "members_data"]
