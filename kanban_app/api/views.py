@@ -1,8 +1,10 @@
 from django.contrib.auth.models import User
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
+from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.generics import (
+    CreateAPIView,
     GenericAPIView,
     ListCreateAPIView,
     RetrieveUpdateDestroyAPIView,
@@ -10,7 +12,7 @@ from rest_framework.generics import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from kanban_app.models import Board
+from kanban_app.models import Board, Task
 
 from .permissions import IsBoardOwnerOrMember
 from .serializers import (
@@ -18,6 +20,8 @@ from .serializers import (
     BoardSerializer,
     BoardUpdateSerializer,
     EmailCheckSerializer,
+    TaskCreateSerializer,
+    TaskSerializer,
     UserSummarySerializer,
 )
 
@@ -25,7 +29,17 @@ from .serializers import (
 class BoardListCreateView(ListCreateAPIView):
     """Create boards and list boards owned by or shared with the user."""
 
-    queryset = Board.objects.all()
+    queryset = Board.objects.annotate(
+        ticket_count=Count("tasks", distinct=True),
+        tasks_to_do_count=Count(
+            "tasks", filter=Q(tasks__status=Task.Status.TO_DO), distinct=True,
+        ),
+        tasks_high_prio_count=Count(
+            "tasks",
+            filter=Q(tasks__priority=Task.Priority.HIGH),
+            distinct=True,
+        ),
+    )
     serializer_class = BoardSerializer
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -51,7 +65,7 @@ class BoardDetailView(RetrieveUpdateDestroyAPIView):
     """Retrieve, partially update or delete a board with object permissions."""
 
     queryset = Board.objects.select_related("owner").prefetch_related(
-        "members",
+        "members", "tasks__assignee", "tasks__reviewer",
     )
     serializer_class = BoardDetailSerializer
     authentication_classes = [TokenAuthentication]
@@ -82,3 +96,21 @@ class EmailCheckView(GenericAPIView):
             email__iexact=query.validated_data["email"],
         )
         return Response(self.get_serializer(user).data)
+
+
+class TaskCreateView(CreateAPIView):
+    """Create a task for a board member and record its actual creator."""
+
+    queryset = Task.objects.all()
+    serializer_class = TaskCreateSerializer
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def create(self, request, *args, **kwargs):
+        """Validate the input and return the newly created task's details."""
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.save(creator=request.user)
+        return Response(
+            TaskSerializer(task).data, status=status.HTTP_201_CREATED,
+        )
