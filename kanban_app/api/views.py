@@ -5,6 +5,7 @@ from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
 from rest_framework.generics import (
     CreateAPIView,
+    DestroyAPIView,
     GenericAPIView,
     ListAPIView,
     ListCreateAPIView,
@@ -13,13 +14,19 @@ from rest_framework.generics import (
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from kanban_app.models import Board, Task
+from kanban_app.models import Board, Comment, Task
 
-from .permissions import IsBoardOwnerOrMember, IsTaskActionAllowed
+from .permissions import (
+    IsBoardOwnerOrMember,
+    IsCommentAuthor,
+    IsTaskActionAllowed,
+    IsTaskBoardMember,
+)
 from .serializers import (
     BoardDetailSerializer,
     BoardSerializer,
     BoardUpdateSerializer,
+    CommentSerializer,
     EmailCheckSerializer,
     TaskCreateSerializer,
     TaskSerializer,
@@ -68,7 +75,7 @@ class BoardDetailView(RetrieveUpdateDestroyAPIView):
     """Retrieve, partially update or delete a board with object permissions."""
 
     queryset = Board.objects.select_related("owner").prefetch_related(
-        "members", "tasks__assignee", "tasks__reviewer",
+        "members", "tasks__assignee", "tasks__reviewer", "tasks__comments",
     )
     serializer_class = BoardDetailSerializer
     authentication_classes = [TokenAuthentication]
@@ -140,7 +147,9 @@ class TaskDetailView(RetrieveUpdateDestroyAPIView):
 class AssignedTaskListView(ListAPIView):
     """List only the tasks assigned to the authenticated user."""
 
-    queryset = Task.objects.select_related("assignee", "reviewer")
+    queryset = Task.objects.select_related(
+        "assignee", "reviewer",
+    ).prefetch_related("comments")
     serializer_class = TaskSerializer
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -154,7 +163,9 @@ class AssignedTaskListView(ListAPIView):
 class ReviewingTaskListView(ListAPIView):
     """List only the tasks reviewed by the authenticated user."""
 
-    queryset = Task.objects.select_related("assignee", "reviewer")
+    queryset = Task.objects.select_related(
+        "assignee", "reviewer",
+    ).prefetch_related("comments")
     serializer_class = TaskSerializer
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated]
@@ -163,3 +174,37 @@ class ReviewingTaskListView(ListAPIView):
     def get_queryset(self):
         """Filter the list by its current reviewer."""
         return super().get_queryset().filter(reviewer=self.request.user)
+
+
+class TaskCommentListView(ListCreateAPIView):
+    """List and create comments for a task accessible to board members."""
+
+    queryset = Comment.objects.select_related("author")
+    serializer_class = CommentSerializer
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsTaskBoardMember]
+    pagination_class = None
+
+    def get_queryset(self):
+        """Return only comments belonging to the task in the URL."""
+        return super().get_queryset().filter(task_id=self.kwargs["task_id"])
+
+    def perform_create(self, serializer):
+        """Use the authenticated author and the task supplied by the URL."""
+        serializer.save(
+            author=self.request.user, task_id=self.kwargs["task_id"],
+        )
+
+
+class TaskCommentDetailView(DestroyAPIView):
+    """Delete a nested task comment only when requested by its author."""
+
+    queryset = Comment.objects.all()
+    serializer_class = CommentSerializer
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsCommentAuthor]
+    lookup_url_kwarg = "comment_id"
+
+    def get_queryset(self):
+        """Bind the comment lookup to its parent task to prevent mismatches."""
+        return super().get_queryset().filter(task_id=self.kwargs["task_id"])

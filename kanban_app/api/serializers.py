@@ -3,7 +3,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
-from kanban_app.models import Board, Task
+from kanban_app.models import Board, Comment, Task
 
 
 class BoardSerializer(serializers.ModelSerializer):
@@ -46,8 +46,9 @@ class TaskSerializer(serializers.ModelSerializer):
 
     assignee = UserSummarySerializer(read_only=True)
     reviewer = UserSummarySerializer(read_only=True)
-    # New tasks have no comments until the comment model is added.
-    comments_count = serializers.IntegerField(read_only=True, default=0)
+    comments_count = serializers.IntegerField(
+        source="comments.count", read_only=True,
+    )
 
     class Meta:
         model = Task
@@ -162,3 +163,15 @@ class TaskUpdateResponseSerializer(TaskSerializer):
             "id", "title", "description", "status", "priority",
             "assignee", "reviewer", "due_date",
         ]
+
+
+class CommentSerializer(serializers.ModelSerializer):
+    """Validate comment content and return the author's full name."""
+
+    author = serializers.CharField(
+        source="author.get_full_name", read_only=True,
+    )
+
+    class Meta:
+        model = Comment
+        fields = ["id", "created_at", "author", "content"]
