@@ -134,10 +134,31 @@ class TaskCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Reject assignees and reviewers who are outside the task's board."""
+        board = attrs.get("board") or self.instance.board
         for field in ["assignee", "reviewer"]:
-            user = attrs.get(field)
-            if user and not attrs["board"].members.filter(pk=user.pk).exists():
+            user = attrs.get(field, getattr(self.instance, field, None))
+            if user and not board.members.filter(pk=user.pk).exists():
                 raise serializers.ValidationError({
                     f"{field}_id": "The user must be a board member.",
                 })
         return attrs
+
+
+class TaskUpdateSerializer(TaskCreateSerializer):
+    """Validate partial task changes while keeping the original board."""
+
+    def validate_board(self, value):
+        """Accept the existing board ID but reject moving the task."""
+        if value != self.instance.board_id:
+            raise serializers.ValidationError("The board cannot be changed.")
+        return self.instance.board
+
+
+class TaskUpdateResponseSerializer(TaskSerializer):
+    """Return the fields documented for a successful task update."""
+
+    class Meta(TaskSerializer.Meta):
+        fields = [
+            "id", "title", "description", "status", "priority",
+            "assignee", "reviewer", "due_date",
+        ]

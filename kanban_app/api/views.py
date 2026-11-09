@@ -6,6 +6,7 @@ from rest_framework.authentication import TokenAuthentication
 from rest_framework.generics import (
     CreateAPIView,
     GenericAPIView,
+    ListAPIView,
     ListCreateAPIView,
     RetrieveUpdateDestroyAPIView,
 )
@@ -14,7 +15,7 @@ from rest_framework.response import Response
 
 from kanban_app.models import Board, Task
 
-from .permissions import IsBoardOwnerOrMember
+from .permissions import IsBoardOwnerOrMember, IsTaskActionAllowed
 from .serializers import (
     BoardDetailSerializer,
     BoardSerializer,
@@ -22,6 +23,8 @@ from .serializers import (
     EmailCheckSerializer,
     TaskCreateSerializer,
     TaskSerializer,
+    TaskUpdateResponseSerializer,
+    TaskUpdateSerializer,
     UserSummarySerializer,
 )
 
@@ -114,3 +117,49 @@ class TaskCreateView(CreateAPIView):
         return Response(
             TaskSerializer(task).data, status=status.HTTP_201_CREATED,
         )
+
+
+class TaskDetailView(RetrieveUpdateDestroyAPIView):
+    """Partially update or delete tasks according to the requested action."""
+
+    queryset = Task.objects.select_related("board", "assignee", "reviewer")
+    serializer_class = TaskUpdateSerializer
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated, IsTaskActionAllowed]
+    http_method_names = ["patch", "delete", "options"]
+
+    def partial_update(self, request, *args, **kwargs):
+        """Validate changed fields and return the updated task information."""
+        task = self.get_object()
+        serializer = self.get_serializer(task, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        task = serializer.save()
+        return Response(TaskUpdateResponseSerializer(task).data)
+
+
+class AssignedTaskListView(ListAPIView):
+    """List only the tasks assigned to the authenticated user."""
+
+    queryset = Task.objects.select_related("assignee", "reviewer")
+    serializer_class = TaskSerializer
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        """Filter the list by its current assignee."""
+        return super().get_queryset().filter(assignee=self.request.user)
+
+
+class ReviewingTaskListView(ListAPIView):
+    """List only the tasks reviewed by the authenticated user."""
+
+    queryset = Task.objects.select_related("assignee", "reviewer")
+    serializer_class = TaskSerializer
+    authentication_classes = [TokenAuthentication]
+    permission_classes = [IsAuthenticated]
+    pagination_class = None
+
+    def get_queryset(self):
+        """Filter the list by its current reviewer."""
+        return super().get_queryset().filter(reviewer=self.request.user)
