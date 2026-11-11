@@ -1,5 +1,6 @@
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import User
+from django.db import IntegrityError, transaction
 from rest_framework import serializers
 
 
@@ -34,6 +35,16 @@ class RegistrationSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
+        """Reject username collisions, including simultaneous registrations."""
+        try:
+            with transaction.atomic():
+                return self.create_user(validated_data)
+        except IntegrityError:
+            raise serializers.ValidationError(
+                {"email": "This email is already registered."}
+            ) from None
+
+    def create_user(self, validated_data):
         """Create a user with a hashed password."""
         validated_data.pop("repeated_password")
         fullname = validated_data.pop("fullname")
