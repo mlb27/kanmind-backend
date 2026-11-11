@@ -18,10 +18,12 @@ class IsBoardOwnerOrMember(BasePermission):
 
 
 class IsTaskActionAllowed(BasePermission):
-    """Allow member edits and deletion by the creator or board owner."""
+    """Allow member creation/edits and creator or board owner deletion."""
 
     def has_object_permission(self, request, view, obj):
         """Apply the task's edit and deletion rules separately."""
+        if request.method == "POST":
+            return obj.members.filter(pk=request.user.id).exists()
         if request.method == "DELETE":
             return (
                 obj.creator_id == request.user.id

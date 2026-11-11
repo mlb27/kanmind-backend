@@ -11,10 +11,11 @@ class RegistrationView(APIView):
     """Register new users and return their authentication token."""
 
     permission_classes = [AllowAny]
+    serializer_class = RegistrationSerializer
 
     def post(self, request):
         """Validate registration data and create a user."""
-        serializer = RegistrationSerializer(data=request.data)
+        serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         token = Token.objects.create(user=user)
@@ -31,10 +32,11 @@ class LoginView(APIView):
     """Return a token and user information for valid credentials."""
 
     permission_classes = [AllowAny]
+    serializer_class = LoginSerializer
 
     def post(self, request):
         """Validate login data and reuse or create the user's token."""
-        serializer = LoginSerializer(data=request.data)
+        serializer = self.serializer_class(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data["user"]
         token, _ = Token.objects.get_or_create(user=user)

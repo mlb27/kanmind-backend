@@ -3,16 +3,10 @@ from django.db.models import Count, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.authentication import TokenAuthentication
-from rest_framework.generics import (
-    CreateAPIView,
-    DestroyAPIView,
-    GenericAPIView,
-    ListAPIView,
-    ListCreateAPIView,
-    RetrieveUpdateDestroyAPIView,
-)
+from rest_framework.generics import GenericAPIView, ListAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.viewsets import ModelViewSet
 
 from kanban_app.models import Board, Comment, Task
 
@@ -28,6 +22,7 @@ from .serializers import (
     BoardUpdateSerializer,
     CommentSerializer,
     EmailCheckSerializer,
+    TaskBoardSerializer,
     TaskCreateSerializer,
     TaskSerializer,
     TaskUpdateResponseSerializer,
@@ -36,8 +31,8 @@ from .serializers import (
 )
 
 
-class BoardListCreateView(ListCreateAPIView):
-    """Create boards and list boards owned by or shared with the user."""
+class BoardViewSet(ModelViewSet):
+    """Create, list and manage boards with action-specific responses."""
 
     queryset = Board.objects.annotate(
         ticket_count=Count("tasks", distinct=True),
@@ -49,44 +44,34 @@ class BoardListCreateView(ListCreateAPIView):
             filter=Q(tasks__priority=Task.Priority.HIGH),
             distinct=True,
         ),
-    )
+    ).select_related("owner").prefetch_related("members")
     serializer_class = BoardSerializer
     authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsBoardOwnerOrMember]
     pagination_class = None
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def get_queryset(self):
-        """Restrict the list to boards accessible to the current user."""
-        user = self.request.user
-        return (
-            super().get_queryset()
-            .filter(Q(owner=user) | Q(members=user))
-            .distinct()
-            .prefetch_related("members")
-            .order_by("id")
+        """Filter personal lists and load task details only when needed."""
+        queryset = super().get_queryset().order_by("id")
+        if self.action == "list":
+            user = self.request.user
+            return queryset.filter(Q(owner=user) | Q(members=user)).distinct()
+        return queryset.prefetch_related(
+            "tasks__assignee", "tasks__reviewer", "tasks__comments",
         )
+
+    def get_serializer_class(self):
+        """Select the documented summary, detail or update response."""
+        if self.action == "retrieve":
+            return BoardDetailSerializer
+        if self.action == "partial_update":
+            return BoardUpdateSerializer
+        return super().get_serializer_class()
 
     def perform_create(self, serializer):
         """Always use the authenticated user as the new board's owner."""
         serializer.save(owner=self.request.user)
-
-
-class BoardDetailView(RetrieveUpdateDestroyAPIView):
-    """Retrieve, partially update or delete a board with object permissions."""
-
-    queryset = Board.objects.select_related("owner").prefetch_related(
-        "members", "tasks__assignee", "tasks__reviewer", "tasks__comments",
-    )
-    serializer_class = BoardDetailSerializer
-    authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAuthenticated, IsBoardOwnerOrMember]
-    http_method_names = ["get", "patch", "delete", "head", "options"]
-
-    def get_serializer_class(self):
-        """Use writable member IDs only for board updates."""
-        if self.request.method == "PATCH":
-            return BoardUpdateSerializer
-        return super().get_serializer_class()
 
 
 class EmailCheckView(GenericAPIView):
@@ -108,32 +93,36 @@ class EmailCheckView(GenericAPIView):
         return Response(self.get_serializer(user).data)
 
 
-class TaskCreateView(CreateAPIView):
-    """Create a task for a board member and record its actual creator."""
+class TaskViewSet(ModelViewSet):
+    """Create, partially update and delete tasks with action permissions."""
 
-    queryset = Task.objects.all()
-    serializer_class = TaskCreateSerializer
+    queryset = Task.objects.select_related("board", "assignee", "reviewer")
+    serializer_class = TaskSerializer
     authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsTaskActionAllowed]
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_serializer_class(self):
+        """Use dedicated input serializers for task creation and updates."""
+        if self.action == "create":
+            return TaskCreateSerializer
+        if self.action == "partial_update":
+            return TaskUpdateSerializer
+        return super().get_serializer_class()
 
     def create(self, request, *args, **kwargs):
-        """Validate the input and return the newly created task's details."""
+        """Check board access before validating and saving task details."""
+        board_data = TaskBoardSerializer(data=request.data)
+        board_data.is_valid(raise_exception=True)
+        self.check_object_permissions(
+            request, board_data.validated_data["board"],
+        )
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         task = serializer.save(creator=request.user)
         return Response(
             TaskSerializer(task).data, status=status.HTTP_201_CREATED,
         )
-
-
-class TaskDetailView(RetrieveUpdateDestroyAPIView):
-    """Partially update or delete tasks according to the requested action."""
-
-    queryset = Task.objects.select_related("board", "assignee", "reviewer")
-    serializer_class = TaskUpdateSerializer
-    authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAuthenticated, IsTaskActionAllowed]
-    http_method_names = ["patch", "delete", "options"]
 
     def partial_update(self, request, *args, **kwargs):
         """Validate changed fields and return the updated task information."""
@@ -176,17 +165,25 @@ class ReviewingTaskListView(ListAPIView):
         return super().get_queryset().filter(reviewer=self.request.user)
 
 
-class TaskCommentListView(ListCreateAPIView):
-    """List and create comments for a task accessible to board members."""
+class CommentViewSet(ModelViewSet):
+    """List, create and delete nested task comments with author checks."""
 
     queryset = Comment.objects.select_related("author")
     serializer_class = CommentSerializer
     authentication_classes = [TokenAuthentication]
     permission_classes = [IsAuthenticated, IsTaskBoardMember]
     pagination_class = None
+    lookup_url_kwarg = "comment_id"
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def get_permissions(self):
+        """Require membership for reading/writing and authorship to delete."""
+        if self.action == "destroy":
+            return [IsAuthenticated(), IsCommentAuthor()]
+        return super().get_permissions()
 
     def get_queryset(self):
-        """Return only comments belonging to the task in the URL."""
+        """Bind every comment lookup to the task supplied by its URL."""
         return super().get_queryset().filter(task_id=self.kwargs["task_id"])
 
     def perform_create(self, serializer):
@@ -194,17 +191,3 @@ class TaskCommentListView(ListCreateAPIView):
         serializer.save(
             author=self.request.user, task_id=self.kwargs["task_id"],
         )
-
-
-class TaskCommentDetailView(DestroyAPIView):
-    """Delete a nested task comment only when requested by its author."""
-
-    queryset = Comment.objects.all()
-    serializer_class = CommentSerializer
-    authentication_classes = [TokenAuthentication]
-    permission_classes = [IsAuthenticated, IsCommentAuthor]
-    lookup_url_kwarg = "comment_id"
-
-    def get_queryset(self):
-        """Bind the comment lookup to its parent task to prevent mismatches."""
-        return super().get_queryset().filter(task_id=self.kwargs["task_id"])

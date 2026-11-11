@@ -1,7 +1,6 @@
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers
-from rest_framework.exceptions import PermissionDenied
 
 from kanban_app.models import Board, Comment, Task
 
@@ -105,10 +104,23 @@ class EmailCheckSerializer(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
 
 
-class TaskCreateSerializer(serializers.ModelSerializer):
-    """Validate a new task and ensure its participants belong to the board."""
+class TaskBoardSerializer(serializers.ModelSerializer):
+    """Resolve the task's board before its access permissions are checked."""
 
     board = serializers.IntegerField(write_only=True)
+
+    class Meta:
+        model = Task
+        fields = ["board"]
+
+    def validate_board(self, value):
+        """Return the existing board or the documented not-found response."""
+        return get_object_or_404(Board, pk=value)
+
+
+class TaskCreateSerializer(TaskBoardSerializer):
+    """Validate a new task and ensure its participants belong to the board."""
+
     assignee_id = serializers.PrimaryKeyRelatedField(
         source="assignee", queryset=User.objects.all(),
         write_only=True, required=False, allow_null=True,
@@ -118,20 +130,11 @@ class TaskCreateSerializer(serializers.ModelSerializer):
         write_only=True, required=False, allow_null=True,
     )
 
-    class Meta:
-        model = Task
+    class Meta(TaskBoardSerializer.Meta):
         fields = [
             "board", "title", "description", "status", "priority",
             "assignee_id", "reviewer_id", "due_date",
         ]
-
-    def validate_board(self, value):
-        """Find the board and require membership before creating a task."""
-        board = get_object_or_404(Board, pk=value)
-        user = self.context["request"].user
-        if not board.members.filter(pk=user.pk).exists():
-            raise PermissionDenied("You must be a member of this board.")
-        return board
 
     def validate(self, attrs):
         """Reject assignees and reviewers who are outside the task's board."""
